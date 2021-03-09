@@ -10,10 +10,10 @@
 #include <netdb.h>
 #include <time.h>
 #include <signal.h>
+#include <iostream>
 
 #define DEBUG
 #define PROTOCOL "RPS UDP 1.0\n"
-
 
 void INThandler(int sig)
 {
@@ -32,13 +32,12 @@ int main(int argc, char *argv[])
   char *Desthost = strtok(argv[1], delim);
   char *Destport = strtok(NULL, delim);
 
-    if (Desthost == NULL || Destport == NULL)
+  if (Desthost == NULL || Destport == NULL)
   {
     printf("Wrong format.\n");
     exit(0);
   }
 
-  int port = atoi(Destport);
   addrinfo sa, *si, *p;
   sa.ai_family = AF_INET;
   sa.ai_socktype = SOCK_DGRAM;
@@ -78,21 +77,29 @@ int main(int argc, char *argv[])
   ssize_t sentbytes;
   int tries = 0;
   int bytes = 0;
+  fd_set currentSockets;
+  fd_set readySockets;
+  FD_ZERO(&currentSockets);
+  FD_ZERO(&readySockets);
+  FD_SET(sockfd, &currentSockets);
+  FD_SET(STDIN_FILENO, &currentSockets);
+  int fdMax = sockfd;
+  int nfds = 0;
   socklen_t addr_len = sizeof(servaddr);
   char recvBuffer[256];
-  char sendBuffer[256];
+  char sendBuffer[5];
+  char writeBuffer[3];
   bool isRunning = true;
-
 
   printf("Sent message to server.\n");
 
-  setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+  setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
   signal(SIGINT, INThandler);
 
- while(bytes <= 0 && tries < 3)
- {
-   memset(recvBuffer,0, sizeof(recvBuffer));
-   if ((sentbytes = sendto(sockfd, PROTOCOL, sizeof(PROTOCOL), 0, p->ai_addr, p->ai_addrlen)) == -1)
+  while (bytes <= 0 && tries < 3)
+  {
+    memset(recvBuffer, 0, sizeof(recvBuffer));
+    if ((sentbytes = sendto(sockfd, PROTOCOL, sizeof(PROTOCOL), 0, p->ai_addr, p->ai_addrlen)) == -1)
     {
       printf("Error: Couldnt send to the server.");
       exit(0);
@@ -113,17 +120,65 @@ int main(int argc, char *argv[])
   }
   else
   {
-    if(strcmp(recvBuffer, "NOT OK\n") >= 0)
+    if (strstr(recvBuffer, "ERROR") != nullptr)
     {
-      printf("PROTOCOL IS NOT SUPPORTED... Leaving\n");
+      printf("%s", recvBuffer);
       exit(0);
     }
-    while(isRunning)
+    else
     {
-
+      printf("PROTOCOL IS SUPPORTED. Protocol: %s%s", PROTOCOL, recvBuffer);
+    }
+    while (isRunning)
+    {
+      readySockets = currentSockets;
+      if (fdMax < sockfd)
+      {
+        fdMax = sockfd;
+      }
+      nfds = select(fdMax + 1, &readySockets, NULL, NULL, NULL);
+      if (nfds == -1)
+      {
+        printf("ERROR, something went wrong!\n");
+        break;
+      }
+      if (FD_ISSET(STDIN_FILENO, &readySockets))
+      {
+        memset(sendBuffer, 0, sizeof(sendBuffer));
+        memset(writeBuffer, 0, sizeof(writeBuffer));
+        std::cin.getline(writeBuffer, sizeof(writeBuffer));
+        std::cin.clear();
+        if (strlen(writeBuffer) > 3)
+        {
+          printf("Message to long!\n");
+          FD_CLR(STDIN_FILENO, &readySockets);
+          memset(writeBuffer, 0, sizeof(writeBuffer));
+          break;
+        }
+        else if(strcmp(writeBuffer, "0") == 0)
+        {
+          isRunning = false;
+        }
+        else
+        {
+          send(sockfd, sendBuffer, sizeof(sendBuffer), 0);
+          FD_CLR(STDIN_FILENO, &readySockets);
+        }
+      }
+      if (FD_ISSET(sockfd, &readySockets))
+      {
+        memset(recvBuffer, 0, sizeof(recvBuffer));
+        if ((bytes = recv(sockfd, recvBuffer, sizeof(recvBuffer), 0)) == -1)
+        {
+          continue;
+        }
+        else
+        {
+          printf("%s\n", recvBuffer);
+        }
+      }
     }
   }
- }
 
   close(sockfd);
   return 0;
