@@ -145,23 +145,21 @@ int main(int argc, char *argv[])
       if (FD_ISSET(STDIN_FILENO, &readySockets))
       {
         memset(sendBuffer, 0, sizeof(sendBuffer));
-        memset(writeBuffer, 0, sizeof(writeBuffer));
-        std::cin.getline(writeBuffer, sizeof(writeBuffer));
+        std::cin.getline(sendBuffer, sizeof(sendBuffer));
         std::cin.clear();
-        if (strlen(writeBuffer) > 3)
+        if (strlen(sendBuffer) > 3)
         {
           printf("Message to long!\n");
           FD_CLR(STDIN_FILENO, &readySockets);
-          memset(writeBuffer, 0, sizeof(writeBuffer));
           break;
         }
-        else if(strcmp(writeBuffer, "0") == 0)
+        else if (strcmp(sendBuffer, "0") == 0)
         {
           isRunning = false;
         }
         else
         {
-          send(sockfd, sendBuffer, sizeof(sendBuffer), 0);
+          sendto(sockfd, sendBuffer, sizeof(sendBuffer), 0, p->ai_addr, p->ai_addrlen);
           FD_CLR(STDIN_FILENO, &readySockets);
         }
       }

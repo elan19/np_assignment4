@@ -21,8 +21,13 @@ struct cli
 {
   struct sockaddr_in addr;
   struct timeval tid;
+  bool isInGame;
+  bool spectating;
+  bool isInQueue;
+  bool isReady;
 };
-std::vector<cli> clients;
+std::vector<cli *> clients;
+std::vector<cli *> queue;
 
 void checkJobbList(int signum)
 {
@@ -30,9 +35,9 @@ void checkJobbList(int signum)
   gettimeofday(&t, NULL);
   for (size_t i = 0; i < clients.size(); i++)
   {
-    if (t.tv_sec - clients.at(i).tid.tv_sec > 10)
+    if (t.tv_sec - clients.at(i)->tid.tv_sec > 10)
     {
-      clients.erase(clients.begin() + i);
+      //clients.erase(clients.begin() + i);
       printf("lämnnnna dååå\n");
     }
   }
@@ -59,11 +64,12 @@ int main(int argc, char *argv[])
     exit(0);
   }
 
-  int sockfd;
   addrinfo sa, *si, *p;
+  memset(&sa, 0, sizeof(sa));
   sa.ai_family = AF_UNSPEC;
   sa.ai_socktype = SOCK_DGRAM;
   sa.ai_protocol = 17;
+  int sockfd;
 
   if (int rv = getaddrinfo(Desthost, Destport, &sa, &si) != 0)
   {
@@ -121,7 +127,6 @@ int main(int argc, char *argv[])
   setitimer(ITIMER_REAL, &alarmTime, NULL); // Start/register the alarm.
 
   bool clientFound = false;
-  int clientNr = 0;
   int clientInUse = -1;
   fd_set currentSockets;
   fd_set readySockets;
@@ -147,12 +152,14 @@ int main(int argc, char *argv[])
       else
       {
         clientFound = false;
+        clientInUse = -1;
         for (size_t i = 0; i < clients.size() && clientFound == false; i++)
         {
-          if (clients.at(i).addr.sin_addr.s_addr == clientaddr.sin_addr.s_addr && clients.at(i).addr.sin_port == clientaddr.sin_port)
+          if (clients.at(i)->addr.sin_addr.s_addr == clientaddr.sin_addr.s_addr && clients.at(i)->addr.sin_port == clientaddr.sin_port)
           {
+
             clientFound = true;
-            clientNr = i;
+            clientInUse = i;
           }
         }
         if (clientFound == false)
@@ -162,7 +169,11 @@ int main(int argc, char *argv[])
             struct cli newClient;
             newClient.addr = clientaddr;
             gettimeofday(&newClient.tid, NULL);
-            clients.push_back(newClient);
+            newClient.isInGame = false;
+            newClient.spectating = false;
+            newClient.isReady = false;
+            newClient.isInQueue = false;
+            clients.push_back(&newClient);
             sendto(sockfd, MENU, sizeof(MENU), 0, (struct sockaddr *)&clientaddr, client_len);
           }
           else
@@ -173,6 +184,44 @@ int main(int argc, char *argv[])
         else
         {
           //check what the client presses
+          if (clients.at(clientInUse)->isInGame == false && clients.at(clientInUse)->isReady == false && clients.at(clientInUse)->isInQueue == false)
+          {
+            if (strcmp(recvBuffer, "1") == 0)
+            {
+              clients.at(clientInUse)->isInQueue = true;
+              queue.push_back(clients.at(clientInUse));
+              if (queue.size() > 1)
+              {
+                for (size_t i = 0; i < 2; i++)
+                {
+                  queue.at(i)->isInGame = true;
+                  printf("hejsan\n");
+                }
+                queue.erase(queue.begin(), queue.begin() + 2);
+              }
+            }
+            if (clients.at(clientInUse)->isInGame == true && clients.at(clientInUse)->isReady == false)
+            {
+              if (strcmp(recvBuffer, "\n") == 0)
+              {
+                printf("isready\n");
+                clients.at(clientInUse)->isReady = true;
+              }
+            }
+            //spectate == 2
+            //leaderboard == 3
+          }
+          for (size_t i = 0; i < clients.size(); i++)
+          {
+            if (clients.at(i)->isReady == false && clients.at(i)->isInGame == false && clients.at(i)->isInQueue == true)
+            {
+              sendto(sockfd, "You are in queue, waiting for another player!\n", sizeof("You are in queue, waiting for another player!\n"), 0, (struct sockaddr *)&clientaddr, client_len);
+            }
+            else if (clients.at(i)->isReady == false && clients.at(i)->isInGame == true && clients.at(i)->isInQueue == false)
+            {
+              sendto(sockfd, "Game is ready. Press Enter to join the game!\n", sizeof("Game is ready. Press Enter to join the game!\n"), 0, (struct sockaddr *)&clientaddr, client_len);
+            }
+          }
         }
       }
     }
