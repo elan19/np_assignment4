@@ -14,17 +14,17 @@
 #include <vector>
 #include <signal.h>
 
-#define PROTOCOL "RPS UDP 1.0\n"
+#define VERSION "RPS TCP 1.0\n"
 #define MENU "Please select:\n1. Play\n2. Watch\n3.Leaderboard\n\n0.Exit\n"
 
 struct cli
 {
-  struct sockaddr_in addr;
   struct timeval tid;
   bool isInGame;
   bool spectating;
   bool isInQueue;
   bool isReady;
+  int sockID;
 };
 std::vector<cli *> clients;
 std::vector<cli *> queue;
@@ -48,6 +48,8 @@ void checkJobbList(int signum)
 int main(int argc, char *argv[])
 {
 
+  /* Do more magic */
+
   if (argc != 2)
   {
     printf("Wrong format IP:PORT\n");
@@ -64,12 +66,18 @@ int main(int argc, char *argv[])
     exit(0);
   }
 
-  addrinfo sa, *si, *p;
+  int sockfd, connfd, len;
+  struct sockaddr_in cli;
+
+  struct addrinfo sa, *si, *p;
   memset(&sa, 0, sizeof(sa));
   sa.ai_family = AF_UNSPEC;
-  sa.ai_socktype = SOCK_DGRAM;
-  sa.ai_protocol = 17;
-  int sockfd;
+  sa.ai_socktype = SOCK_STREAM;
+  sa.ai_flags = AI_PASSIVE;
+
+  struct timeval tv;
+  tv.tv_sec = 5;
+  tv.tv_usec = 0;
 
   if (int rv = getaddrinfo(Desthost, Destport, &sa, &si) != 0)
   {
@@ -77,16 +85,14 @@ int main(int argc, char *argv[])
     exit(0);
   }
 
-  struct sockaddr_in clientaddr;
-
   for (p = si; p != NULL; p = p->ai_next)
   {
     if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1)
     {
-      printf("Error: Failed to create socket.\n");
+      perror("Error: Couldnt connect.\n");
       continue;
     }
-    memset(&clientaddr, 0, sizeof(clientaddr));
+
     if ((bind(sockfd, p->ai_addr, p->ai_addrlen)) != 0)
     {
       printf("Error: Couldnt bind!\n");
@@ -96,38 +102,25 @@ int main(int argc, char *argv[])
     break;
   }
 
+  //setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
   if (p == NULL)
   {
     printf("NULL\n");
-    freeaddrinfo(si);
-    close(sockfd);
     exit(0);
   }
 
-  struct timeval tv;
-  tv.tv_sec = 2;
-  tv.tv_usec = 0;
-  int bytes = 0;
-  ssize_t sentbytes;
-  socklen_t client_len = sizeof(clientaddr);
+  freeaddrinfo(si);
+  //signal(SIGINT, INThandler);
 
-  setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+  if (listen(sockfd, 1) == -1)
+  {
+    printf("Error: Listen failed!\n");
+    exit(0);
+  }
 
-  /* 
-     Prepare to setup a reoccurring event every 10s. If it_interval, or it_value is omitted, it will be a single alarm 10s after it has been set. 
-  */
-  struct itimerval alarmTime;
-  alarmTime.it_interval.tv_sec = 2;
-  alarmTime.it_interval.tv_usec = 2;
-  alarmTime.it_value.tv_sec = 2;
-  alarmTime.it_value.tv_usec = 2;
-
-  /* Regiter a callback function, associated with the SIGALRM signal, which will be raised when the alarm goes of */
-  signal(SIGALRM, checkJobbList);
-  setitimer(ITIMER_REAL, &alarmTime, NULL); // Start/register the alarm.
-
-  bool clientFound = false;
-  int clientInUse = -1;
+  len = sizeof(cli);
+  char buffer[256];
+  char recvBuffer[256];
   fd_set currentSockets;
   fd_set readySockets;
   FD_ZERO(&currentSockets);
@@ -135,96 +128,86 @@ int main(int argc, char *argv[])
   FD_SET(sockfd, &currentSockets);
   int fdMax = sockfd;
   int nfds = 0;
-  char recvBuffer[256];
-  char sendBuffer[256];
+  int recieve = 0;
 
   while (true)
   {
     readySockets = currentSockets;
 
-    if (FD_ISSET(sockfd, &readySockets))
+    nfds = select(fdMax + 1, &readySockets, NULL, NULL, NULL);
+    if (nfds == -1)
     {
-      bytes = recvfrom(sockfd, recvBuffer, sizeof(recvBuffer), 0, (struct sockaddr *)&clientaddr, &client_len);
-      if (bytes < 0)
-      {
-        continue;
-      }
-      else
-      {
-        clientFound = false;
-        clientInUse = -1;
-        for (size_t i = 0; i < clients.size() && clientFound == false; i++)
-        {
-          if (clients.at(i)->addr.sin_addr.s_addr == clientaddr.sin_addr.s_addr && clients.at(i)->addr.sin_port == clientaddr.sin_port)
-          {
+      printf("Something went wrong with the select\n");
+      break;
+    }
 
-            clientFound = true;
-            clientInUse = i;
-          }
-        }
-        if (clientFound == false)
+    for (int i = sockfd; i < fdMax + 1; i++)
+    {
+
+      if (FD_ISSET(i, &readySockets))
+      {
+        if (i == sockfd)
         {
-          if (strcmp(recvBuffer, PROTOCOL) >= 0)
+          if ((connfd = accept(sockfd, (struct sockaddr *)&cli, (socklen_t *)&len)) == -1)
           {
-            struct cli newClient;
-            newClient.addr = clientaddr;
-            gettimeofday(&newClient.tid, NULL);
-            newClient.isInGame = false;
-            newClient.spectating = false;
-            newClient.isReady = false;
-            newClient.isInQueue = false;
-            clients.push_back(&newClient);
-            sendto(sockfd, MENU, sizeof(MENU), 0, (struct sockaddr *)&clientaddr, client_len);
+            continue;
           }
           else
           {
-            sendto(sockfd, "ERROR, Wrong protocol!\n", sizeof("Error, Wrong protcol!\n"), 0, (struct sockaddr *)&clientaddr, client_len);
+            struct cli newClient;
+            newClient.isInGame = false;
+            newClient.isInQueue = false;
+            newClient.isReady = false;
+            newClient.spectating = false;
+            gettimeofday(&newClient.tid, NULL);
+            newClient.sockID = connfd;
+            FD_SET(newClient.sockID, &currentSockets);
+            clients.push_back(&newClient);
+            char buf[sizeof(VERSION)] = VERSION;
+            send(connfd, buf, strlen(buf), 0);
+            printf("Server protocol: %s\n", buf);
+            if (newClient.sockID > fdMax)
+            {
+              fdMax = newClient.sockID;
+            }
           }
         }
         else
         {
-          //check what the client presses
-          if (clients.at(clientInUse)->isInGame == false && clients.at(clientInUse)->isReady == false && clients.at(clientInUse)->isInQueue == false)
+          memset(recvBuffer, 0, sizeof(recvBuffer));
+          recieve = recv(i, recvBuffer, sizeof(recvBuffer), 0);
+          if (recieve <= 0)
           {
-            if (strcmp(recvBuffer, "1") == 0)
+            close(i);
+            for (size_t j = 0; j < clients.size(); j++)
             {
-              clients.at(clientInUse)->isInQueue = true;
-              queue.push_back(clients.at(clientInUse));
-              if (queue.size() > 1)
+              if (i == clients[j]->sockID)
               {
-                for (size_t i = 0; i < 2; i++)
-                {
-                  queue.at(i)->isInGame = true;
-                  printf("hejsan\n");
-                }
-                queue.erase(queue.begin(), queue.begin() + 2);
+                clients.erase(clients.begin() + j);
+                FD_CLR(i, &currentSockets);
+                break;
               }
             }
-            if (clients.at(clientInUse)->isInGame == true && clients.at(clientInUse)->isReady == false)
-            {
-              if (strcmp(recvBuffer, "\n") == 0)
-              {
-                printf("isready\n");
-                clients.at(clientInUse)->isReady = true;
-              }
-            }
-            //spectate == 2
-            //leaderboard == 3
+            continue;
           }
-          for (size_t i = 0; i < clients.size(); i++)
+          else if(strstr(recvBuffer, "OK") != nullptr)
           {
-            if (clients.at(i)->isReady == false && clients.at(i)->isInGame == false && clients.at(i)->isInQueue == true)
-            {
-              sendto(sockfd, "You are in queue, waiting for another player!\n", sizeof("You are in queue, waiting for another player!\n"), 0, (struct sockaddr *)&clientaddr, client_len);
-            }
-            else if (clients.at(i)->isReady == false && clients.at(i)->isInGame == true && clients.at(i)->isInQueue == false)
-            {
-              sendto(sockfd, "Game is ready. Press Enter to join the game!\n", sizeof("Game is ready. Press Enter to join the game!\n"), 0, (struct sockaddr *)&clientaddr, client_len);
-            }
+            send(i, MENU, strlen(MENU), 0);
+          }
+          else
+          {
+            send(i, "ERROR Wrong format on the message\n", strlen("ERORR Wrong format on the message\n"), 0);
           }
         }
+        FD_CLR(i, &readySockets);
       }
     }
   }
-  return (0);
+
+#ifdef DEBUG
+  printf("Host %s, and port %d.\n", Desthost, port);
+#endif
+
+  close(sockfd);
+  return 0;
 }

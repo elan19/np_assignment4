@@ -8,23 +8,28 @@
 #include <unistd.h>
 #include <errno.h>
 #include <netdb.h>
-#include <time.h>
 #include <signal.h>
+#include <curses.h>
+#include <sys/select.h>
 #include <iostream>
+#include <signal.h>
 
 #define DEBUG
-#define PROTOCOL "RPS UDP 1.0\n"
+#define VERSION "RPS TCP 1.0\n"
+#define ERROR "ERROR TO\n"
 
 void INThandler(int sig)
 {
+  printf("\n");
   exit(0);
 }
 
 int main(int argc, char *argv[])
 {
+
   if (argc != 2)
   {
-    printf("Wrong format IP:PORT\n");
+    printf("Wrong format IP:PORT NAME\n");
     exit(0);
   }
 
@@ -38,10 +43,16 @@ int main(int argc, char *argv[])
     exit(0);
   }
 
+  int port = atoi(Destport);
+
   addrinfo sa, *si, *p;
+  memset(&sa, 0, sizeof(sa));
   sa.ai_family = AF_INET;
-  sa.ai_socktype = SOCK_DGRAM;
-  sa.ai_protocol = 17;
+  sa.ai_socktype = SOCK_STREAM;
+
+  struct timeval tv;
+  tv.tv_sec = 5;
+  tv.tv_usec = 0;
 
   if (int rv = getaddrinfo(Desthost, Destport, &sa, &si) != 0)
   {
@@ -49,15 +60,20 @@ int main(int argc, char *argv[])
     exit(0);
   }
 
-  struct sockaddr_in servaddr;
-
   int sockfd;
 
   for (p = si; p != NULL; p = p->ai_next)
   {
     if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1)
     {
-      printf("Error: Failed to create socket.\n");
+      perror("Error: Couldnt connect.\n");
+      continue;
+    }
+
+    if ((connect(sockfd, p->ai_addr, p->ai_addrlen) == -1))
+    {
+      close(sockfd);
+      printf("Error: Couldnt connect.\n");
       continue;
     }
     break;
@@ -66,17 +82,15 @@ int main(int argc, char *argv[])
   if (p == NULL)
   {
     printf("NULL\n");
-    freeaddrinfo(si);
-    close(sockfd);
     exit(0);
   }
+  setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
+  freeaddrinfo(si);
+  signal(SIGINT, INThandler);
 
-  struct timeval tv;
-  tv.tv_sec = 2;
-  tv.tv_usec = 0;
-  ssize_t sentbytes;
-  int tries = 0;
-  int bytes = 0;
+  char recvBuf[256];
+  char sendBuf[5];
+  int bytes;
   fd_set currentSockets;
   fd_set readySockets;
   FD_ZERO(&currentSockets);
@@ -85,98 +99,65 @@ int main(int argc, char *argv[])
   FD_SET(STDIN_FILENO, &currentSockets);
   int fdMax = sockfd;
   int nfds = 0;
-  socklen_t addr_len = sizeof(servaddr);
-  char recvBuffer[256];
-  char sendBuffer[5];
-  char writeBuffer[3];
-  bool isRunning = true;
 
-  printf("Sent message to server.\n");
-
-  setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
-  signal(SIGINT, INThandler);
-
-  while (bytes <= 0 && tries < 3)
+  while (1)
   {
-    memset(recvBuffer, 0, sizeof(recvBuffer));
-    if ((sentbytes = sendto(sockfd, PROTOCOL, sizeof(PROTOCOL), 0, p->ai_addr, p->ai_addrlen)) == -1)
+    readySockets = currentSockets;
+    if (fdMax < sockfd)
     {
-      printf("Error: Couldnt send to the server.");
-      exit(0);
+      fdMax = sockfd;
     }
-
-    bytes = recvfrom(sockfd, recvBuffer, sizeof(recvBuffer), 0, (struct sockaddr *)&servaddr, &addr_len);
-
-    if (bytes == -1 && tries < 2)
+    nfds = select(fdMax + 1, &readySockets, NULL, NULL, NULL);
+    if (nfds == -1)
     {
-      printf("Server did not respond, trying again.\n");
+      printf("ERROR, something went wrong!\n");
+      break;
     }
-    tries++;
-  }
-  if (bytes == -1)
-  {
-    printf("Error:Couldnt recieve from server.\n");
-    exit(0);
-  }
-  else
-  {
-    if (strstr(recvBuffer, "ERROR") != nullptr)
+    if (FD_ISSET(STDIN_FILENO, &readySockets))
     {
-      printf("%s", recvBuffer);
-      exit(0);
+      memset(sendBuf, 0, sizeof(sendBuf));
+      std::cin.getline(sendBuf, sizeof(sendBuf));
+      std::cin.clear();
+      if(strstr(sendBuf, "0") != nullptr)
+      {
+        FD_CLR(STDIN_FILENO, &readySockets);
+        exit(0);
+      }
+      send(sockfd, sendBuf, sizeof(sendBuf), 0);
+      FD_CLR(STDIN_FILENO, &readySockets);
     }
-    else
+    if (FD_ISSET(sockfd, &readySockets))
     {
-      printf("PROTOCOL IS SUPPORTED. Protocol: %s%s", PROTOCOL, recvBuffer);
-    }
-    while (isRunning)
-    {
-      readySockets = currentSockets;
-      if (fdMax < sockfd)
+      memset(recvBuf, 0, sizeof(recvBuf));
+      if ((bytes = recv(sockfd, recvBuf, sizeof(recvBuf), 0)) == -1)
       {
-        fdMax = sockfd;
+        continue;
       }
-      nfds = select(fdMax + 1, &readySockets, NULL, NULL, NULL);
-      if (nfds == -1)
+      else if (strstr(recvBuf, VERSION) != nullptr)
       {
-        printf("ERROR, something went wrong!\n");
-        break;
+        printf("Server protocol: %s", recvBuf);
+        send(sockfd, "OK\n", strlen("OK\n"),0);
       }
-      if (FD_ISSET(STDIN_FILENO, &readySockets))
+      else if (strstr(recvBuf, "ERROR") != nullptr)
       {
-        memset(sendBuffer, 0, sizeof(sendBuffer));
-        std::cin.getline(sendBuffer, sizeof(sendBuffer));
-        std::cin.clear();
-        if (strlen(sendBuffer) > 3)
-        {
-          printf("Message to long!\n");
-          FD_CLR(STDIN_FILENO, &readySockets);
-          break;
-        }
-        else if (strcmp(sendBuffer, "0") == 0)
-        {
-          isRunning = false;
-        }
-        else
-        {
-          sendto(sockfd, sendBuffer, sizeof(sendBuffer), 0, p->ai_addr, p->ai_addrlen);
-          FD_CLR(STDIN_FILENO, &readySockets);
-        }
+        printf("%s", recvBuf);
       }
-      if (FD_ISSET(sockfd, &readySockets))
+      else if (strstr(recvBuf, "Server is closing!\n") != nullptr)
       {
-        memset(recvBuffer, 0, sizeof(recvBuffer));
-        if ((bytes = recv(sockfd, recvBuffer, sizeof(recvBuffer), 0)) == -1)
-        {
-          continue;
-        }
-        else
-        {
-          printf("%s\n", recvBuffer);
-        }
+        printf("%s", recvBuf);
+        exit(0);
       }
+      else
+      {
+        printf("%s", recvBuf);
+      }
+      FD_CLR(sockfd, &readySockets);
     }
   }
+
+#ifdef DEBUG
+  printf("Host %s, and port %d.\n", Desthost, port);
+#endif
 
   close(sockfd);
   return 0;
