@@ -147,6 +147,11 @@ int main(int argc, char *argv[])
         printf("%s", recvBuf);
         exit(0);
       }
+      else if(strstr(recvBuf, "A game is ready, press 'Enter' to accept!\n") != nullptr)
+      {
+        std::system("clear");
+        printf("%s", recvBuf);
+      }
       else
       {
         printf("%s", recvBuf);
